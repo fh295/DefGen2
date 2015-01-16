@@ -1,3 +1,3 @@
-# DefGen2
+# DefGen
 
-Generate descriptors from external resources e.g. dictionary defs
+Generate description text from external representations e.g. word -> definition and vice versa
