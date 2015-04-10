@@ -1,3 +1,3 @@
 # DefGen
 
-Generate description text from external representations e.g. word -> definition and vice versa
+Train a reverse dictionary and/or general knowledge crossword question answerer.
