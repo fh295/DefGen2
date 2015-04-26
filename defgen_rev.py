@@ -1,5 +1,5 @@
 '''
-Build a soft-attention-based image caption generator
+Map to a word2vec embedding from a dictionary definition
 '''
 import theano
 import theano.tensor as tensor
@@ -45,13 +45,13 @@ def build_model(tparams, options):
     # description string: #words x #samples
     x = tensor.matrix('x', dtype='int64')
     mask = tensor.matrix('mask', dtype='float32')
-    # context: #samples x dim
+    # targets: #samples x dim
     ctx = tensor.matrix('ctx', dtype='float32')
 
     n_timesteps = x.shape[0]
     n_samples = x.shape[1]
 
-    # word embedding
+    # RNN (input) word emebddings
     emb = tparams['Wemb'][x.flatten()].reshape([n_timesteps, n_samples, options['dim_word']])
     # decoder
     proj = get_layer('lstm')[1](tparams, emb, options, 
