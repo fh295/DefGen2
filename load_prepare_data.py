@@ -29,8 +29,8 @@ def prepare_data(seqs, contexts, maxlen=None):
     return x, x_mask, contexts
 
 
-def load_data(n_words=20000, valid_portion=0.1):
-    with open('/home/fh295/Documents/Deep_learning_Bengio/defgen/Data_files/Wiki_data_T4.pkl', 'rb') as f:
+def load_data(dataset,n_words=20000, valid_portion=0.1):
+    with open(dataset, 'rb') as f:
         x = pkl.load(f)
         y = pkl.load(f)
 
