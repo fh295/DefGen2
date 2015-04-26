@@ -29,8 +29,8 @@ def prepare_data(seqs, contexts, maxlen=None):
     return x, x_mask, contexts
 
 
-def load_data(dataset,n_words=20000, valid_portion=0.1):
-    with open(dataset, 'rb') as f:
+def load_data(data_name,n_words=20000, valid_portion=0.1):
+    with open(data_name, 'rb') as f:
         x = pkl.load(f)
         y = pkl.load(f)
 
