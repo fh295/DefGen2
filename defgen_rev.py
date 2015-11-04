@@ -1,9 +1,13 @@
 '''
-Map to a word2vec embedding from a dictionary definition
+Build a soft-attention-based image caption generator
 '''
 import theano
 import theano.tensor as tensor
-from theano.sandbox.rng_mrg import MRG_RandomStreams as RandomStreams
+
+from defgen import *
+
+#from theano.sandbox.rng_mrg import MRG_RandomStreams as RandomStreams
+from theano.tensor.shared_randomstreams import RandomStreams
 
 import cPickle as pkl
 import numpy
@@ -14,8 +18,6 @@ from scipy import optimize, stats
 from collections import OrderedDict
 from sklearn.cross_validation import KFold
 
-from defgen import *
-
 import load_prepare_data
 
 
@@ -23,10 +25,16 @@ import load_prepare_data
 def init_params(options):
     params = OrderedDict()
     # embedding
-    params['Wemb'] = norm_weight(options['n_words'], options['dim_word'])
+    if not options['use_target_as_input']:
+        params['Wemb'] = norm_weight(options['n_words'], options['dim_word'])
     # encoder: LSTM
-    params = get_layer('lstm')[0](options, params, prefix='encoder', 
-                                  nin=options['dim_word'], dim=options['dim'])
+    if options.setdefault('feedforward', False):
+        params['Wff'] = norm_weight(options['dim_word'], options['dim'])
+    elif options.setdefault('regress', False):
+        params['Wff'] = norm_weight(options['dim_word'], options['dim'])
+    else:
+        params = get_layer('lstm')[0](options, params, prefix='encoder',
+                                      nin=options['dim_word'], dim=options['dim'])
     # readout
     if 'n_layers' in options:
         for lidx in xrange(1, options['n_layers']):
@@ -43,55 +51,96 @@ def build_model(tparams, options):
     use_noise = theano.shared(numpy.float32(0.))
 
     # description string: #words x #samples
-    x = tensor.matrix('x', dtype='int64')
+    if options['use_target_as_input']:
+        x = tensor.tensor3('x', dtype='float32')
+    else:
+        x = tensor.matrix('x', dtype='int64')
     mask = tensor.matrix('mask', dtype='float32')
-    # targets: #samples x dim
+    # context: #samples x dim
     ctx = tensor.matrix('ctx', dtype='float32')
 
     n_timesteps = x.shape[0]
     n_samples = x.shape[1]
 
-    # RNN (input) word emebddings
-    emb = tparams['Wemb'][x.flatten()].reshape([n_timesteps, n_samples, options['dim_word']])
+    # word embedding
+    if options['use_target_as_input']:
+        emb = x
+    else:
+        emb = tparams['Wemb'][x.flatten()].reshape([n_timesteps, n_samples, options['dim_word']])
     # decoder
-    proj = get_layer('lstm')[1](tparams, emb, options, 
-                                prefix='encoder', 
-                                mask=mask)
-    proj_h = proj[0]
-    proj_h = (proj_h * mask[:,:,None]).sum(axis=0)
-    proj_h = proj_h / mask.sum(axis=0)[:,None]
+    if options.setdefault('feedforward', False):
+        proj_h = tensor.dot(emb, tparams['Wff'])
+        proj_h = (proj_h * mask[:,:,None]).sum(axis=0)
+        proj_h = proj_h / mask.sum(axis=0)[:,None]
+    elif options.setdefault('regress', False):
+        proj_h = (emb * mask[:,:,None]).sum(axis=0)
+        proj_h = tensor.dot(proj_h, tparams['Wff'])
+        proj_h = proj_h / mask.sum(axis=0)[:,None]
+    else:
+        proj = get_layer('lstm')[1](tparams, emb, options, 
+                                    prefix='encoder', 
+                                    mask=mask)
+        proj_h = proj[0]
+        if options['use_mean']:
+            proj_h = (proj_h * mask[:,:,None]).sum(axis=0)
+            proj_h = proj_h / mask.sum(axis=0)[:,None]
+        else:
+            proj_h = proj_h[-1]
 
     if 'n_layers' in options:
         for lidx in xrange(1, options['n_layers']):
             proj_h = get_layer('ff')[1](tparams, proj_h, options, prefix='ff_out_%d'%lidx, activ='tanh')
     out = get_layer('ff')[1](tparams, proj_h, options, prefix='ff_out', activ='linear')
-    # normalize
-    out = out / ((out ** 2).sum(1))[:,None]
-    cost = 1. - (out * ctx).sum(1)
 
-    # normalize
-    out = out / tensor.sqrt((out ** 2).sum(1))[:,None]
-    cost = 1. - (out * ctx).sum(1)
+    # cost
+    if options['loss_type'] == 'cosine':
+        out = out / tensor.sqrt((out ** 2).sum(1))[:,None]
+        cost = 1. - (out * ctx).sum(1)
+    elif options['loss_type'] == 'ranking':
+        out = out / tensor.sqrt((out ** 2).sum(1))[:,None]
+        rndidx = trng.permutation(n=ctx.shape[0])
+        ctx_rnd = ctx[rndidx]
+        cost = tensor.maximum(0., 1 - (out * ctx).sum(1) + (out * ctx_rnd).sum(1))
+    else:
+        raise Exception('Unknown loss function')
 
     return trng, use_noise, x, mask, ctx, cost
 
 def build_fprop(tparams, options, trng, use_noise):
     # description string: #words x #samples
-    x = tensor.matrix('x', dtype='int64')
+    if options['use_target_as_input']:
+        x = tensor.tensor3('x', dtype='float32')
+    else:
+        x = tensor.matrix('x', dtype='int64')
     mask = tensor.matrix('mask', dtype='float32')
 
     n_timesteps = x.shape[0]
     n_samples = x.shape[1]
 
     # word embedding
-    emb = tparams['Wemb'][x.flatten()].reshape([n_timesteps, n_samples, options['dim_word']])
+    if options['use_target_as_input']:
+        emb = x
+    else:
+        emb = tparams['Wemb'][x.flatten()].reshape([n_timesteps, n_samples, options['dim_word']])
     # decoder
-    proj = get_layer('lstm')[1](tparams, emb, options, 
-                                prefix='encoder', 
-                                mask=mask)
-    proj_h = proj[0]
-    proj_h = (proj_h * mask[:,:,None]).sum(axis=0)
-    proj_h = proj_h / mask.sum(axis=0)[:,None]
+    if options.setdefault('feedforward', False):
+        proj_h = tensor.dot(emb, tparams['Wff'])
+        proj_h = (proj_h * mask[:,:,None]).sum(axis=0)
+        proj_h = proj_h / mask.sum(axis=0)[:,None]
+    elif options.setdefault('regress', False):
+        proj_h = (emb * mask[:,:,None]).sum(axis=0)
+        proj_h = tensor.dot(proj_h, tparams['Wff'])
+        proj_h = proj_h / mask.sum(axis=0)[:,None]
+    else:
+        proj = get_layer('lstm')[1](tparams, emb, options, 
+                                    prefix='encoder', 
+                                    mask=mask)
+        proj_h = proj[0]
+        if 'use_mean' in options and options['use_mean'] or not 'use_mean' in options:
+            proj_h = (proj_h * mask[:,:,None]).sum(axis=0)
+            proj_h = proj_h / mask.sum(axis=0)[:,None]
+        elif not options['use_mean']:
+            proj_h = proj_h[-1]
 
     out = get_layer('ff')[1](tparams, proj_h, options, prefix='ff_out', activ='linear')
 
@@ -100,7 +149,9 @@ def build_fprop(tparams, options, trng, use_noise):
     return f_out
 
 
-def pred_probs(f_log_probs, prepare_data, data, iterator, verbose=False):
+def pred_probs(f_log_probs, prepare_data, data, iterator, 
+               use_target_as_input=False, wv_embs=None, 
+               verbose=False):
     n_samples = len(data[0])
     probs = numpy.zeros((n_samples, 1)).astype('float32')
 
@@ -109,6 +160,11 @@ def pred_probs(f_log_probs, prepare_data, data, iterator, verbose=False):
     for _, valid_index in iterator:
         x, mask, ctx = prepare_data([data[1][t] for t in valid_index], 
                                     [data[0][t] for t in valid_index])
+
+        if use_target_as_input:
+            shp = x.shape
+            x = wv_embs[x.flatten()].reshape([shp[0], shp[1], wv_embs.shape[1]])
+
         pred_probs = f_log_probs(x,mask,ctx)
         probs[valid_index] = pred_probs[:,None]
 
@@ -182,6 +238,7 @@ def train(dim_word=100, # word vector dimensionality
           optimizer='rmsprop', 
           batch_size = 16,
           valid_batch_size = 16,
+          embeddings='w2v.pkl',
           dataset='wn_w2v_defs',
           saveto='model.npz',
           validFreq=1000,
@@ -189,6 +246,12 @@ def train(dim_word=100, # word vector dimensionality
           sampleFreq=100, # generate some samples after every sampleFreq updates
           dictionary=None, # word dictionary
           use_dropout=False,
+          use_target_as_input=False,
+          loss_type='cosine', # 'cosine', 'ranking'
+          ranking_tol=1.,
+          feedforward=False,
+          regress=False,
+          use_mean=False,
           reload_=False):
 
     # Model options
@@ -204,6 +267,20 @@ def train(dim_word=100, # word vector dimensionality
         if n_words > max(word_dict.values())+1 or n_words < 0:
             n_words = max(word_dict.values())+1
             model_options['n_words'] = n_words
+
+    if use_target_as_input:
+        assert dictionary, 'Dictionary must be provided'
+
+        with open(embeddings, 'rb') as f:
+            wv = pkl.load(f)
+        wv_embs = numpy.zeros((n_words, len(wv.values()[0])), dtype='float32')
+        for ii, vv in wv.iteritems():
+            if ii in word_dict:
+                wv_embs[word_dict[ii],:] = vv
+        wv_embs = wv_embs.astype('float32')
+        model_options['dim_word'] = wv_embs.shape[1]
+    else:
+        wv_embs = None
 
     # reload options
     if reload_ and os.path.exists(saveto):
@@ -290,6 +367,10 @@ def train(dim_word=100, # word vector dimensionality
                 print 'Minibatch with zero sample under length ', maxlen
                 continue
 
+            if model_options['use_target_as_input']:
+                shp = x.shape
+                x = wv_embs[x.flatten()].reshape([shp[0], shp[1], wv_embs.shape[1]])
+
             cost = f_grad_shared(x, mask, ctx)
             f_update(lrate)
 
@@ -326,9 +407,13 @@ def train(dim_word=100, # word vector dimensionality
 
                 #train_err = pred_error(f_pred, prepare_data, train, kf)
                 if valid:
-                    valid_err = -pred_probs(f_log_probs, prepare_data, valid, kf_valid).mean()
+                    valid_err = -pred_probs(f_log_probs, prepare_data, valid, kf_valid, 
+                                            use_target_as_input=use_target_as_input,
+                                            wv_embs=wv_embs).mean()
                 if test:
-                    test_err = -pred_probs(f_log_probs, prepare_data, test, kf_test).mean()
+                    test_err = -pred_probs(f_log_probs, prepare_data, test, kf_test,
+                                           use_target_as_input=use_target_as_input,
+                                           wv_embs=wv_embs).mean()
 
                 history_errs.append([valid_err, test_err])
 
