@@ -4,6 +4,8 @@ Train a reverse dictionary and/or general knowledge crossword question answerer.
 
 Example usage:
 
+TO TRAIN A MODEL: 
+
 Clone the repo, generate your training data and use a command like the following - 
 
 THEANO_FLAGS='floatX=float32, device=gpu' python train_model.py -m your_name_for_the_trained_model.npz -da your_data_files.pkl -di your_dictionary_file.pkl -edim 500
@@ -20,5 +22,12 @@ THEANO_FLAGS='floatX=float32, device=gpu' python train_model.py -m your_name_for
 
 Some scripts that may be useful for pre-processing the data into this format can be found in the subdirectory Useful Scripts
 
+TO QUERY A MODEL: 
+
+ensure that an options file (your_model.npz.pkl) is saved in the same directory as your_model.npz - this should happen automatically when training as above.
+
+python generate_embs.py -m your_model.npz -e your_embeddings.pkl -dic your_dictionary.pkl -sl optional_shortlist.txt
+
+optional_shortlist.txt is a text file containing a list of words (each on a new line). These should be a subset of the keys of embeddings.pkl, and will restrict the possible answers returned by the model. 
 
 
